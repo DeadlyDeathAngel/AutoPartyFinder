@@ -17,7 +17,7 @@ The `/apf` window matches the in-game Recruit Members form:
 
 Conditions are saved automatically. **Load last in-game PF** copies whatever you last set in the native Party Finder window.
 
-If **Auto put up PF** is ticked, the listing is posted again after **59 minutes**, or as soon as Party Finder ends for any other reason.
+If **Auto put up PF** is ticked, the listing is posted again after **62 minutes**, or as soon as Party Finder ends for any other reason.
 
 ## Commands
 

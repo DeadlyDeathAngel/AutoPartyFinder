@@ -34,6 +34,12 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        if (Configuration.Version < 2)
+        {
+            Configuration.RelistAfterMinutes = 62;
+            Configuration.Version = 2;
+            Configuration.Save();
+        }
         Duties = new DutyCatalog();
         PartyFinder = new PartyFinderService(this);
 

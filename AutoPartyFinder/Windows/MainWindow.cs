@@ -138,7 +138,7 @@ public sealed class MainWindow : Window, IDisposable
         var minutes = cfg.RelistAfterMinutes;
         if (cfg.AutoPutUpPf)
         {
-            if (ImGui.SliderInt("Re-list after (minutes)", ref minutes, 1, 59))
+            if (ImGui.SliderInt("Re-list after (minutes)", ref minutes, 1, 90))
             {
                 cfg.RelistAfterMinutes = minutes;
                 changed = true;

@@ -6,7 +6,7 @@ namespace AutoPartyFinder;
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
     /// <summary>0 Normal, 1 Alliance, 2 Custom Match.</summary>
     public int RecruitmentType { get; set; }
@@ -29,7 +29,7 @@ public class Configuration : IPluginConfiguration
 
     public bool AutoPutUpPf { get; set; }
 
-    public int RelistAfterMinutes { get; set; } = 59;
+    public int RelistAfterMinutes { get; set; } = 62;
 
     public bool IsConfigWindowMovable { get; set; } = true;
 
