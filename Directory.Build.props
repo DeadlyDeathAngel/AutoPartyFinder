@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <DalamudPath Condition="'$(DalamudPath)' == '' and Exists('$(HOME)/.xlcore/dalamud/Hooks/dev/Dalamud.dll')">$(HOME)/.xlcore/dalamud/Hooks/dev</DalamudPath>
+    <DalamudPath Condition="'$(DalamudPath)' == '' and Exists('$(APPDATA)/XIVLauncher/addon/Hooks/dev/Dalamud.dll')">$(APPDATA)/XIVLauncher/addon/Hooks/dev</DalamudPath>
+  </PropertyGroup>
+</Project>
