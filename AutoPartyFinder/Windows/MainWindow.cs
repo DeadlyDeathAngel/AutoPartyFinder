@@ -135,6 +135,13 @@ public sealed class MainWindow : Window, IDisposable
             changed = true;
         }
 
+        var closeOnQueue = cfg.ClosePfOnQueue;
+        if (ImGui.Checkbox("Close Party Finder when queueing for a duty", ref closeOnQueue))
+        {
+            cfg.ClosePfOnQueue = closeOnQueue;
+            changed = true;
+        }
+
         var minutes = cfg.RelistAfterMinutes;
         if (cfg.AutoPutUpPf)
         {
@@ -186,7 +193,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.TextWrapped(
             "Conditions are saved and reused the next time you recruit. " +
-            "With Auto put up PF enabled, the listing is posted again after the timer, or sooner if Party Finder ends.");
+            "With Auto put up PF enabled, the listing is posted again after the timer, or sooner if Party Finder ends. " +
+            "Queueing for a duty closes the Party Finder windows and waits to re-open them until you leave the queue.");
         ImGui.TextDisabled("/apf  /apf recruit  /apf stop  /apf end");
     }
 

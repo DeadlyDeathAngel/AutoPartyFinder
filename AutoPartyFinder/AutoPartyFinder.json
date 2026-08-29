@@ -2,9 +2,9 @@
   "Author": "DeadlyDeathAngel",
   "Name": "Auto Party Finder",
   "InternalName": "AutoPartyFinder",
-  "AssemblyVersion": "1.0.0.1",
+  "AssemblyVersion": "1.0.1.0",
   "Punchline": "Recruit members with saved Party Finder conditions and auto-relist.",
-  "Description": "Opens a Recruit Members window with the same Party Finder fields as the game: party type, duty category, objective, newbie welcome, comment, and average item level.\n\nSaved conditions are reused the next time you recruit. With Auto put up PF enabled, the listing is posted again after 62 minutes or if Party Finder ends for any reason.\n\nCommands:\n/apf — open the recruiter\n/apf recruit — post with saved conditions\n/apf stop — stop auto-relisting",
+  "Description": "Opens a Recruit Members window with the same Party Finder fields as the game: party type, duty category, objective, newbie welcome, comment, and average item level.\n\nSaved conditions are reused the next time you recruit. With Auto put up PF enabled, the listing is posted again after 62 minutes or if Party Finder ends for any reason. Party Finder windows close automatically when you queue for a duty.\n\nCommands:\n/apf — open the recruiter\n/apf recruit — post with saved conditions\n/apf stop — stop auto-relisting",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/DeadlyDeathAngel/AutoPartyFinder",
   "Tags": [

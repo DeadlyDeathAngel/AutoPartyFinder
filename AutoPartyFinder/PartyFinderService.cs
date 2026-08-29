@@ -60,6 +60,7 @@ public sealed class PartyFinderService : IDisposable
     private bool requestedListings;
     private volatile bool sawRecruitmentCommenced;
     private volatile bool sawRecruitmentEnded;
+    private volatile bool closePfOnQueueRequested;
     private uint lastSeenListingId;
 
     public PartyFinderService(Plugin plugin)
@@ -68,6 +69,7 @@ public sealed class PartyFinderService : IDisposable
         Plugin.Framework.Update += OnUpdate;
         Plugin.ChatGui.ChatMessage += OnChatMessage;
         Plugin.PartyFinderGui.ReceiveListing += OnReceiveListing;
+        Plugin.Condition.ConditionChange += OnConditionChange;
     }
 
     public RecruitStatus Status => status;
@@ -93,7 +95,9 @@ public sealed class PartyFinderService : IDisposable
             : "Listed",
         RecruitStatus.Withdrawing => "Ending current listing…",
         RecruitStatus.ConfirmingWithdraw => "Confirming end recruitment…",
-        RecruitStatus.RelistWait => $"Re-listing in {FormatRemaining(nextRelistAt - DateTime.UtcNow)}",
+        RecruitStatus.RelistWait => DutyQueueBlocksPartyFinder
+            ? "Waiting to leave duty queue before re-listing…"
+            : $"Re-listing in {FormatRemaining(nextRelistAt - DateTime.UtcNow)}",
         RecruitStatus.Failed => lastError ?? "Failed",
         _ => status.ToString(),
     };
@@ -130,10 +134,77 @@ public sealed class PartyFinderService : IDisposable
 
     public void Dispose()
     {
+        Plugin.Condition.ConditionChange -= OnConditionChange;
         Plugin.PartyFinderGui.ReceiveListing -= OnReceiveListing;
         Plugin.ChatGui.ChatMessage -= OnChatMessage;
         Plugin.Framework.Update -= OnUpdate;
     }
+
+    private void OnConditionChange(ConditionFlag flag, bool value)
+    {
+        if (!value || !plugin.Configuration.ClosePfOnQueue)
+            return;
+
+        if (flag is ConditionFlag.InDutyQueue
+            or ConditionFlag.WaitingForDutyFinder
+            or ConditionFlag.WaitingForDuty)
+        {
+            closePfOnQueueRequested = true;
+        }
+    }
+
+    private void HandleDutyQueue()
+    {
+        if (!plugin.Configuration.ClosePfOnQueue)
+            return;
+
+        if (ClosePartyFinderWindows())
+            plugin.Chat("Closed Party Finder because you queued for a duty.");
+
+        if (status is RecruitStatus.OpeningPartyFinder
+            or RecruitStatus.OpeningCondition
+            or RecruitStatus.Applying
+            or RecruitStatus.ClickingRecruit
+            or RecruitStatus.Confirming
+            or RecruitStatus.WaitingForListing
+            or RecruitStatus.Withdrawing
+            or RecruitStatus.ConfirmingWithdraw)
+        {
+            if (HasActiveListing)
+            {
+                listedAt = listedAt == default ? DateTime.UtcNow : listedAt;
+                SetState(RecruitStatus.Listed);
+            }
+            else if (AutoRelistActive)
+            {
+                nextRelistAt = DateTime.UtcNow + EndedRelistDelay;
+                SetState(RecruitStatus.RelistWait);
+            }
+            else
+            {
+                SetState(RecruitStatus.Idle);
+            }
+        }
+    }
+
+    private static bool ClosePartyFinderWindows()
+    {
+        var closed = NativeUi.CloseIfOpen("LookingForGroupCondition");
+        closed |= NativeUi.CloseIfOpen("LookingForGroupDetail");
+        closed |= NativeUi.CloseIfOpen("LookingForGroup");
+        return closed;
+    }
+
+    private bool DutyQueueBlocksPartyFinder
+        => plugin.Configuration.ClosePfOnQueue && IsQueuedOrInDuty();
+
+    private static bool IsQueuedOrInDuty()
+        => Plugin.Condition[ConditionFlag.InDutyQueue]
+           || Plugin.Condition[ConditionFlag.WaitingForDutyFinder]
+           || Plugin.Condition[ConditionFlag.WaitingForDuty]
+           || Plugin.Condition[ConditionFlag.BoundByDuty]
+           || Plugin.Condition[ConditionFlag.BoundByDuty56]
+           || Plugin.Condition[ConditionFlag.BoundByDuty95];
 
     public void StartRecruit(bool enableAutoRelist)
     {
@@ -154,6 +225,12 @@ public sealed class PartyFinderService : IDisposable
         if (Plugin.Condition[ConditionFlag.BetweenAreas] || Plugin.Condition[ConditionFlag.BetweenAreas51])
         {
             Fail("Wait until you finish changing areas.");
+            return;
+        }
+
+        if (plugin.Configuration.ClosePfOnQueue && IsQueuedOrInDuty())
+        {
+            Fail("Can't post Party Finder while queued or in a duty.");
             return;
         }
 
@@ -215,6 +292,15 @@ public sealed class PartyFinderService : IDisposable
             sawRecruitmentEnded = false;
             listingPosted = false;
         }
+
+        if (closePfOnQueueRequested)
+        {
+            closePfOnQueueRequested = false;
+            HandleDutyQueue();
+        }
+
+        if (DutyQueueBlocksPartyFinder && status is RecruitStatus.RelistWait)
+            return;
 
         if (status is RecruitStatus.Idle or RecruitStatus.Failed)
             return;
@@ -288,6 +374,13 @@ public sealed class PartyFinderService : IDisposable
 
     private unsafe void BeginPost()
     {
+        if (DutyQueueBlocksPartyFinder)
+        {
+            nextRelistAt = DateTime.UtcNow + EndedRelistDelay;
+            SetState(RecruitStatus.RelistWait);
+            return;
+        }
+
         endingListing = false;
         if (TryGetConditionAddon(out _))
         {
@@ -523,6 +616,9 @@ public sealed class PartyFinderService : IDisposable
                 lastSeenListingId = OwnListingId;
             if (AutoRelistActive && TimeUntilRelist <= TimeSpan.Zero)
             {
+                if (DutyQueueBlocksPartyFinder)
+                    return;
+
                 plugin.Chat("Refreshing Party Finder before it expires.");
                 BeginPost();
             }
@@ -534,6 +630,13 @@ public sealed class PartyFinderService : IDisposable
         {
             SetState(RecruitStatus.Idle);
             plugin.Chat("Party Finder listing ended.");
+            return;
+        }
+
+        if (DutyQueueBlocksPartyFinder)
+        {
+            nextRelistAt = DateTime.UtcNow + EndedRelistDelay;
+            SetState(RecruitStatus.RelistWait);
             return;
         }
 

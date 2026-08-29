@@ -29,6 +29,8 @@ public class Configuration : IPluginConfiguration
 
     public bool AutoPutUpPf { get; set; }
 
+    public bool ClosePfOnQueue { get; set; } = true;
+
     public int RelistAfterMinutes { get; set; } = 62;
 
     public bool IsConfigWindowMovable { get; set; } = true;

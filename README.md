@@ -14,10 +14,13 @@ The `/apf` window matches the in-game Recruit Members form:
 - Comment
 - Avg. Item Lv. (0–999)
 - Auto put up PF
+- Close Party Finder when queueing for a duty
 
 Conditions are saved automatically. **Load last in-game PF** copies whatever you last set in the native Party Finder window.
 
 If **Auto put up PF** is ticked, the listing is posted again after **62 minutes**, or as soon as Party Finder ends for any other reason.
+
+**Close Party Finder when queueing for a duty** (on by default) closes the Party Finder windows when you enter a Duty Finder or Raid Finder queue. Auto-relist waits until you leave the queue or duty before opening Party Finder again.
 
 ## Commands
 

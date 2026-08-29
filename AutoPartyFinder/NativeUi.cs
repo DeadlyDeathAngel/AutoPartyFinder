@@ -279,6 +279,20 @@ internal static unsafe class NativeUi
         return ((AtkUnitBase*)ptr.Address)->IsVisible;
     }
 
+    public static bool CloseIfOpen(string name)
+    {
+        var ptr = Plugin.GameGui.GetAddonByName(name);
+        if (ptr.IsNull)
+            return false;
+
+        var unit = (AtkUnitBase*)ptr.Address;
+        if (!unit->IsReady || !unit->IsVisible)
+            return false;
+
+        unit->Close(true);
+        return true;
+    }
+
     public static List<string>? ReadDropDownLabels(AtkComponentDropDownList* dropDown)
     {
         if (dropDown == null || dropDown->List == null)
