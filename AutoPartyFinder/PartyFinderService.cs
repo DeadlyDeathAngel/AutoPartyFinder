@@ -466,7 +466,7 @@ public sealed class PartyFinderService : IDisposable
 
         if (!populatedCriteria)
         {
-            WriteStoredRecruitment(agent, cfg, groupCount);
+            WriteStoredRecruitment(agent, cfg, groupCount, includeDutySelection: false);
             FillConditionDetails(addon, cfg, groupCount);
             populatedCriteria = true;
         }
@@ -483,8 +483,10 @@ public sealed class PartyFinderService : IDisposable
                     AdvanceApplyPhase(ApplyPhase.Category);
                 break;
             case ApplyPhase.Category:
-                plugin.Duties.SelectNativeCategory(addon, cfg.DutyCategory);
+                if (NativeUi.GetSelectedIndex(addon->DutyCategoryDropDown) != plugin.Duties.IndexOfCategory(cfg.DutyCategory))
+                    plugin.Duties.SelectNativeCategory(addon, cfg.DutyCategory, dispatchEvent: true);
                 if (NativeUi.GetSelectedIndex(addon->DutyCategoryDropDown) == plugin.Duties.IndexOfCategory(cfg.DutyCategory)
+                    && plugin.Duties.NativeDutyListContains(addon, cfg.DutyCategory, cfg.DutyId)
                     && ApplyPhaseSettled())
                 {
                     AdvanceApplyPhase(ApplyPhase.Duty);
@@ -492,23 +494,37 @@ public sealed class PartyFinderService : IDisposable
 
                 break;
             case ApplyPhase.Duty:
-                plugin.Duties.SelectNativeDuty(addon, cfg.DutyCategory, cfg.DutyId, dispatchEvent: true);
-                if ((cfg.DutyId == 0 || plugin.Duties.IsNativeDutySelected(addon, cfg.DutyCategory, cfg.DutyId))
+                if (!plugin.Duties.IsNativeDutySelected(addon, cfg.DutyCategory, cfg.DutyId))
+                    plugin.Duties.SelectNativeDuty(addon, cfg.DutyCategory, cfg.DutyId, dispatchEvent: true);
+
+                if (plugin.Duties.IsNativeDutySelected(addon, cfg.DutyCategory, cfg.DutyId)
                     && ApplyPhaseSettled())
                 {
+                    WriteStoredRecruitment(agent, cfg, groupCount, includeDutySelection: true);
+                    if (NativeDutyCommitted(agent, cfg.DutyId))
+                    {
+                        agent->PopulateRecruitmentCriteriaPopup(false, false);
+                        SelectPartyType(addon, groupCount, cfg.RecruitmentType);
+                        FillConditionDetails(addon, cfg, groupCount);
+                    }
+
                     AdvanceApplyPhase(ApplyPhase.Details);
                 }
 
                 break;
             case ApplyPhase.Details:
-                if (addon->RecruitMembersButton != null && addon->RecruitMembersButton->IsEnabled)
-                {
-                    if (ApplyPhaseSettled())
-                        SetState(RecruitStatus.ClickingRecruit);
-                }
-                else
+                if (!plugin.Duties.IsNativeDutySelected(addon, cfg.DutyCategory, cfg.DutyId))
                 {
                     plugin.Duties.SelectNativeDuty(addon, cfg.DutyCategory, cfg.DutyId, dispatchEvent: true);
+                    break;
+                }
+
+                WriteStoredRecruitment(agent, cfg, groupCount, includeDutySelection: true);
+                if (addon->RecruitMembersButton != null && addon->RecruitMembersButton->IsEnabled
+                    && NativeDutyCommitted(agent, cfg.DutyId)
+                    && ApplyPhaseSettled())
+                {
+                    SetState(RecruitStatus.ClickingRecruit);
                 }
 
                 break;
@@ -530,11 +546,11 @@ public sealed class PartyFinderService : IDisposable
         radio->SetActive();
     }
 
-    private unsafe void WriteStoredRecruitment(AgentLookingForGroup* agent, Configuration cfg, byte groupCount)
+    private unsafe void WriteStoredRecruitment(AgentLookingForGroup* agent, Configuration cfg, byte groupCount, bool includeDutySelection = true)
     {
         ref var info = ref agent->StoredRecruitmentInfo;
-        info.SelectedCategory = (AgentLookingForGroup.DutyCategory)cfg.DutyCategory;
-        info.SelectedDutyId = cfg.DutyId;
+        if (includeDutySelection)
+            WriteSelectedDuty(agent, cfg.DutyCategory, cfg.DutyId);
         info.Objective = IndexToObjective(cfg.ObjectiveIndex);
         info.BeginnerFriendly = (byte)(cfg.BeginnerFriendly ? 1 : 0);
         info.CompletionStatus = AgentLookingForGroup.CompletionStatus.None;
@@ -556,6 +572,49 @@ public sealed class PartyFinderService : IDisposable
         agent->AvgItemLvEnabled = (byte)(cfg.AverageItemLevelEnabled && itemLevel > 0 ? 1 : 0);
         agent->GroupTypeTab = groupCount >= 3 ? (byte)1 : (byte)Math.Clamp(cfg.RecruitmentType, 0, 2);
     }
+
+    private static unsafe void WriteSelectedDuty(AgentLookingForGroup* agent, uint category, ushort dutyId)
+    {
+        ref var info = ref agent->StoredRecruitmentInfo;
+        info.SelectedCategory = (AgentLookingForGroup.DutyCategory)category;
+        info.SelectedDutyId = dutyId;
+        SetSelectedDutyType(agent, DutyTypeFor(category, dutyId));
+
+        if (dutyId == 0)
+            return;
+
+        if (category == (uint)AgentLookingForGroup.DutyCategory.Roulette)
+            return;
+
+        if (!agent->ContentUI.LoadByContentFinderConditionId(dutyId))
+            return;
+
+        agent->PartyContent = agent->ContentUI.PartyContent;
+        var lookupType = (ushort)agent->ContentUI.LookupInfo.ContentType;
+        if (lookupType != 0)
+            SetSelectedDutyType(agent, lookupType);
+    }
+
+    private static ushort DutyTypeFor(uint category, ushort dutyId)
+    {
+        if (dutyId == 0)
+            return 0;
+        if (category == (uint)AgentLookingForGroup.DutyCategory.Roulette)
+            return 1;
+        return 2;
+    }
+
+    private static unsafe ushort GetSelectedDutyType(AgentLookingForGroup* agent)
+        => *(ushort*)((byte*)&agent->StoredRecruitmentInfo + 0x12);
+
+    private static unsafe void SetSelectedDutyType(AgentLookingForGroup* agent, ushort dutyType)
+        => *(ushort*)((byte*)&agent->StoredRecruitmentInfo + 0x12) = dutyType;
+
+    private static unsafe bool NativeDutyCommitted(AgentLookingForGroup* agent, ushort dutyId)
+        => dutyId == 0
+           || (agent != null
+               && agent->StoredRecruitmentInfo.SelectedDutyId != 0
+               && GetSelectedDutyType(agent) != 0);
 
     private unsafe void FillConditionDetails(AddonLookingForGroupCondition* addon, Configuration cfg, byte groupCount)
     {
@@ -579,7 +638,7 @@ public sealed class PartyFinderService : IDisposable
     }
 
     private bool ApplyPhaseSettled()
-        => DateTime.UtcNow - applyPhaseStarted >= TimeSpan.FromMilliseconds(250);
+        => DateTime.UtcNow - applyPhaseStarted >= TimeSpan.FromMilliseconds(400);
 
     private unsafe void ClickRecruit()
     {
@@ -591,9 +650,31 @@ public sealed class PartyFinderService : IDisposable
         }
 
         var cfg = plugin.Configuration;
-        var dutyReady = cfg.DutyId == 0 || plugin.Duties.IsNativeDutySelected(addon, cfg.DutyCategory, cfg.DutyId);
-        if (!dutyReady)
+        if (!plugin.Duties.IsNativeDutySelected(addon, cfg.DutyCategory, cfg.DutyId))
+        {
             plugin.Duties.SelectNativeDuty(addon, cfg.DutyCategory, cfg.DutyId, dispatchEvent: true);
+            if (TimedOut())
+                Fail("Recruit Members stayed locked. The duty may not have been selected in Recruitment Criteria.");
+            return;
+        }
+
+        var agent = AgentLookingForGroup.Instance();
+        if (agent != null)
+        {
+            var groupCount = plugin.Duties.GetGroupCount(cfg.DutyCategory, cfg.DutyId);
+            if (groupCount is not (1 or 3 or 6))
+                groupCount = cfg.RecruitmentType == 1 ? (byte)3 : (byte)1;
+            WriteStoredRecruitment(agent, cfg, groupCount, includeDutySelection: true);
+            if (!NativeDutyCommitted(agent, cfg.DutyId))
+            {
+                plugin.Duties.SelectNativeDuty(addon, cfg.DutyCategory, cfg.DutyId, dispatchEvent: true);
+                if (TimedOut())
+                    Fail("The duty did not stick in Recruitment Criteria. Select The Occult Crescent (or your duty) once, then try again.");
+                return;
+            }
+
+            Plugin.Log.Information($"APF posting duty id={agent->StoredRecruitmentInfo.SelectedDutyId} type={GetSelectedDutyType(agent)} category={agent->StoredRecruitmentInfo.SelectedCategory}");
+        }
 
         var enabled = addon->RecruitMembersButton != null && addon->RecruitMembersButton->IsEnabled;
         if (!enabled)
@@ -981,6 +1062,7 @@ public sealed class PartyFinderService : IDisposable
         var limit = status switch
         {
             RecruitStatus.OpeningPartyFinder or RecruitStatus.OpeningCondition => OpenTimeout,
+            RecruitStatus.Applying => TimeSpan.FromSeconds(20),
             RecruitStatus.Confirming or RecruitStatus.WaitingForListing => ConfirmTimeout,
             RecruitStatus.Withdrawing or RecruitStatus.ConfirmingWithdraw => EndTimeout,
             _ => StepTimeout,

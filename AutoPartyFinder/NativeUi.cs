@@ -161,6 +161,9 @@ internal static unsafe class NativeUi
     }
 
     public static bool SelectDropDown(AtkComponentDropDownList* dropDown, int index, bool dispatchEvent = false)
+        => SelectDropDown(null, dropDown, index, dispatchEvent, 0);
+
+    public static bool SelectDropDown(AtkUnitBase* addon, AtkComponentDropDownList* dropDown, int index, bool dispatchEvent, int eventParamHint)
     {
         if (dropDown == null || dropDown->List == null || index < 0)
             return false;
@@ -169,13 +172,77 @@ internal static unsafe class NativeUi
         if (index >= count)
             return false;
 
-        if (dropDown->GetSelectedItemIndex() != index || dispatchEvent)
-            dropDown->List->SelectItem(index, true);
+        if (dropDown->GetSelectedItemIndex() == index && !dispatchEvent)
+            return true;
 
-        if (dropDown->GetSelectedItemIndex() != index)
-            dropDown->SelectItem(index);
+        dropDown->SelectItem(index);
+        dropDown->List->SelectItem(index, true);
+        dropDown->List->DispatchItemEvent(index, AtkEventType.ListItemClick);
+        dropDown->List->DispatchItemEvent(index, AtkEventType.ListItemSelect);
+        dropDown->List->DispatchItemEvent(index, AtkEventType.ListItemHighlight);
+
+        if (dispatchEvent && addon != null)
+            CommitDropDownSelection(addon, dropDown, index, eventParamHint);
 
         return dropDown->GetSelectedItemIndex() == index;
+    }
+
+    public static void CommitDropDownSelection(AtkUnitBase* addon, AtkComponentDropDownList* dropDown, int index, int eventParamHint)
+    {
+        if (addon == null || dropDown == null)
+            return;
+
+        var node = ((AtkComponentBase*)dropDown)->OwnerNode;
+        var param = eventParamHint > 0 ? (uint)eventParamHint : GetDropdownEventParam(dropDown, 0);
+
+        var data = new AtkEventData();
+        data.ListItemData.SelectedIndex = index;
+        data.ListItemData.HoveredItemIndex3 = (short)index;
+
+        DispatchListEvent((AtkEventListener*)dropDown, node, (uint)index, index, AtkEventType.ListItemClick, &data);
+        DispatchListEvent((AtkEventListener*)dropDown, node, (uint)index, index, AtkEventType.ListItemSelect, &data);
+        DispatchListEvent((AtkEventListener*)addon, node, param, (int)param, AtkEventType.ListItemClick, &data);
+        DispatchListEvent((AtkEventListener*)addon, node, param, (int)param, AtkEventType.ListItemSelect, &data);
+        DispatchListEvent((AtkEventListener*)addon, node, param, (int)param, AtkEventType.ListItemHighlight, &data);
+    }
+
+    private static void DispatchListEvent(AtkEventListener* listener, AtkComponentNode* node, uint param, int eventParam, AtkEventType type, AtkEventData* data)
+    {
+        if (listener == null)
+            return;
+
+        var evt = new AtkEvent
+        {
+            Listener = listener,
+            Target = node != null ? (AtkEventTarget*)node : null,
+            Param = param,
+            State = new AtkEventState
+            {
+                EventType = type,
+            },
+        };
+
+        listener->ReceiveEvent(type, eventParam, &evt, data);
+    }
+
+    private static uint GetDropdownEventParam(AtkComponentDropDownList* dropDown, uint fallback)
+    {
+        var node = ((AtkComponentBase*)dropDown)->OwnerNode;
+        if (node == null)
+            return fallback;
+
+        var highlight = FindRegisteredEvent(node, AtkEventType.ListItemHighlight);
+        if (highlight != null)
+            return highlight->Param;
+        var select = FindRegisteredEvent(node, AtkEventType.ListItemSelect);
+        if (select != null)
+            return select->Param;
+        var click = FindRegisteredEvent(node, AtkEventType.ListItemClick);
+        if (click != null)
+            return click->Param;
+        if (node->AtkEventManager.Event != null)
+            return node->AtkEventManager.Event->Param;
+        return fallback;
     }
 
     public static int FindLabelIndex(AtkComponentDropDownList* dropDown, string name)
@@ -197,7 +264,71 @@ internal static unsafe class NativeUi
                 return i;
         }
 
+        for (var i = 0; i < labels.Count; i++)
+        {
+            if (LabelsMatch(labels[i], name))
+                return i;
+        }
+
         return -1;
+    }
+
+    public static bool LabelsMatch(string left, string right)
+        => NormalizeLabel(left) == NormalizeLabel(right);
+
+    public static bool IsNoneOrAll(string label)
+    {
+        var text = NormalizeLabel(label);
+        return text is "none" or "all" or "なし" or "すべて" or "alle" or "tout";
+    }
+
+    public static string GetSelectedLabel(AtkComponentDropDownList* dropDown)
+    {
+        if (dropDown == null || dropDown->List == null)
+            return string.Empty;
+
+        var index = dropDown->GetSelectedItemIndex();
+        if (index < 0)
+            return string.Empty;
+
+        var label = dropDown->List->GetItemLabel(index).ToString();
+        return string.IsNullOrWhiteSpace(label) ? string.Empty : label.Trim();
+    }
+
+    private static string NormalizeLabel(string value)
+    {
+        var text = StripLeadingThe(value).Trim().ToLowerInvariant();
+        var builder = new System.Text.StringBuilder(text.Length);
+        var spaced = false;
+        foreach (var c in text)
+        {
+            if (c is '-' or '–' or '—' or ':')
+            {
+                if (!spaced)
+                {
+                    builder.Append(' ');
+                    spaced = true;
+                }
+
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c))
+            {
+                if (!spaced)
+                {
+                    builder.Append(' ');
+                    spaced = true;
+                }
+
+                continue;
+            }
+
+            builder.Append(c);
+            spaced = false;
+        }
+
+        return builder.ToString().Trim();
     }
 
     public static int GetSelectedIndex(AtkComponentDropDownList* dropDown)

@@ -124,9 +124,14 @@ public sealed class DutyCatalog
             pendingLiveCategory = null;
     }
 
-    public unsafe bool SelectNativeCategory(AddonLookingForGroupCondition* addon, uint category)
+    public unsafe bool SelectNativeCategory(AddonLookingForGroupCondition* addon, uint category, bool dispatchEvent = false)
     {
-        return addon != null && NativeUi.SelectDropDown(addon->DutyCategoryDropDown, IndexOfCategory(category));
+        return addon != null && NativeUi.SelectDropDown(
+            (FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)addon,
+            addon->DutyCategoryDropDown,
+            IndexOfCategory(category),
+            dispatchEvent,
+            7);
     }
 
     public unsafe bool SelectNativeDuty(AddonLookingForGroupCondition* addon, uint category, ushort dutyId, bool dispatchEvent = false)
@@ -134,15 +139,16 @@ public sealed class DutyCatalog
         if (addon == null)
             return false;
 
+        var unit = (FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)addon;
         if (dutyId == 0)
-            return NativeUi.SelectDropDown(addon->DutyDropDown, 0, dispatchEvent);
+            return NativeUi.SelectDropDown(unit, addon->DutyDropDown, 0, dispatchEvent, 8);
 
         var name = GetDutyName(category, dutyId);
         var index = NativeUi.FindLabelIndex(addon->DutyDropDown, name);
-        if (index < 0)
-            index = IndexOfDuty(category, dutyId);
+        if (index <= 0)
+            return false;
 
-        return NativeUi.SelectDropDown(addon->DutyDropDown, index, dispatchEvent);
+        return NativeUi.SelectDropDown(unit, addon->DutyDropDown, index, dispatchEvent, 8);
     }
 
     public unsafe bool IsNativeDutySelected(AddonLookingForGroupCondition* addon, uint category, ushort dutyId)
@@ -150,13 +156,22 @@ public sealed class DutyCatalog
         if (addon == null || addon->DutyDropDown == null)
             return false;
 
-        var selected = NativeUi.GetSelectedIndex(addon->DutyDropDown);
+        var selectedLabel = NativeUi.GetSelectedLabel(addon->DutyDropDown);
         if (dutyId == 0)
-            return selected <= 0;
+            return NativeUi.IsNoneOrAll(selectedLabel);
 
-        var name = GetDutyName(category, dutyId);
-        var byName = NativeUi.FindLabelIndex(addon->DutyDropDown, name);
-        return (byName >= 0 && selected == byName) || selected == IndexOfDuty(category, dutyId);
+        if (NativeUi.IsNoneOrAll(selectedLabel))
+            return false;
+
+        return NativeUi.LabelsMatch(selectedLabel, GetDutyName(category, dutyId));
+    }
+
+    public unsafe bool NativeDutyListContains(AddonLookingForGroupCondition* addon, uint category, ushort dutyId)
+    {
+        if (addon == null || dutyId == 0)
+            return true;
+
+        return NativeUi.FindLabelIndex(addon->DutyDropDown, GetDutyName(category, dutyId)) > 0;
     }
 
     private void RebuildFromSheets()
@@ -356,8 +371,7 @@ public sealed class DutyCatalog
     }
 
     private static bool IsNoneLabel(string label)
-        => label.Equals("None", StringComparison.OrdinalIgnoreCase)
-           || label.Equals("なし", StringComparison.OrdinalIgnoreCase);
+        => NativeUi.IsNoneOrAll(label);
 
     private static bool NamesMatch(string left, string right)
     {
