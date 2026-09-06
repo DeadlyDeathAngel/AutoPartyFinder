@@ -36,8 +36,9 @@ internal enum ApplyPhase
 public sealed class PartyFinderService : IDisposable
 {
     private static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan EndTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan EndTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan EndedRelistDelay = TimeSpan.FromSeconds(5);
 
     private readonly Plugin plugin;
@@ -62,6 +63,7 @@ public sealed class PartyFinderService : IDisposable
     private volatile bool sawRecruitmentEnded;
     private volatile bool closePfOnQueueRequested;
     private uint lastSeenListingId;
+    private DateTime lastPfShow;
 
     public PartyFinderService(Plugin plugin)
     {
@@ -70,6 +72,8 @@ public sealed class PartyFinderService : IDisposable
         Plugin.ChatGui.ChatMessage += OnChatMessage;
         Plugin.PartyFinderGui.ReceiveListing += OnReceiveListing;
         Plugin.Condition.ConditionChange += OnConditionChange;
+        Plugin.ClientState.Login += OnLogin;
+        Plugin.ClientState.Logout += OnLogout;
     }
 
     public RecruitStatus Status => status;
@@ -134,6 +138,8 @@ public sealed class PartyFinderService : IDisposable
 
     public void Dispose()
     {
+        Plugin.ClientState.Login -= OnLogin;
+        Plugin.ClientState.Logout -= OnLogout;
         Plugin.Condition.ConditionChange -= OnConditionChange;
         Plugin.PartyFinderGui.ReceiveListing -= OnReceiveListing;
         Plugin.ChatGui.ChatMessage -= OnChatMessage;
@@ -213,18 +219,17 @@ public sealed class PartyFinderService : IDisposable
         autoRelist = enableAutoRelist && plugin.Configuration.ShouldAutoRelist;
         endingListing = false;
         knownListingId = 0;
+        listingPosted = false;
+        clickedConditionButton = false;
+        clickedEndButton = false;
+        requestedListings = false;
         lastError = null;
         sawRecruitmentEnded = false;
+        sawRecruitmentCommenced = false;
 
         if (!Plugin.ClientState.IsLoggedIn)
         {
             Fail("You need to be logged in to post a Party Finder listing.");
-            return;
-        }
-
-        if (Plugin.Condition[ConditionFlag.BetweenAreas] || Plugin.Condition[ConditionFlag.BetweenAreas51])
-        {
-            Fail("Wait until you finish changing areas.");
             return;
         }
 
@@ -307,8 +312,7 @@ public sealed class PartyFinderService : IDisposable
 
         if (!Plugin.ClientState.IsLoggedIn)
         {
-            if (status != RecruitStatus.Idle)
-                Fail("Logged out — recruitment stopped.");
+            HandleLoggedOut();
             return;
         }
 
@@ -360,10 +364,10 @@ public sealed class PartyFinderService : IDisposable
                 WithdrawListing();
                 break;
             case RecruitStatus.ConfirmingWithdraw:
-                if (DetailWindowClosed())
+                if (clickedEndButton && (RecruitmentWindowClosed() || DetailWindowClosed() || !HasActiveListing))
                     AfterWithdraw();
                 else if (TimedOut())
-                    Fail("Could not end the current listing. Open your listing and press End.");
+                    Fail("Could not end the current listing. Open Party Finder → Recruitment Criteria → End.");
                 break;
             case RecruitStatus.RelistWait:
                 if (DateTime.UtcNow >= nextRelistAt)
@@ -395,31 +399,25 @@ public sealed class PartyFinderService : IDisposable
     {
         if (TryGetConditionAddon(out _))
         {
-            SetState(RecruitStatus.Applying);
+            SetState(endingListing ? RecruitStatus.Withdrawing : RecruitStatus.Applying);
             return;
         }
 
-        var agent = AgentLookingForGroup.Instance();
-        if (agent == null)
+        if (WorldNotReady())
         {
-            Fail("Party Finder is not available.");
+            if (TimedOut())
+                Fail("Wait until you finish logging in, then try again.");
             return;
         }
 
-        if (NativeUi.TryGetAddon<AddonLookingForGroup>("LookingForGroup", out _))
+        if (EnsurePartyFinderVisible())
         {
-            SetState(RecruitStatus.OpeningCondition);
+            SetState(endingListing ? RecruitStatus.Withdrawing : RecruitStatus.OpeningCondition);
             return;
         }
 
         if (TimedOut())
-        {
             Fail("Could not open Party Finder.");
-            return;
-        }
-
-        if (!agent->IsAgentActive())
-            agent->Show();
     }
 
     private unsafe void OpenConditionWindow()
@@ -435,6 +433,9 @@ public sealed class PartyFinderService : IDisposable
             Fail("Could not open Recruit Members.");
             return;
         }
+
+        if (WorldNotReady())
+            return;
 
         TryOpenRecruitmentCriteria();
     }
@@ -650,24 +651,22 @@ public sealed class PartyFinderService : IDisposable
 
     private unsafe void WithdrawListing()
     {
-        if (!HasActiveListing && clickedEndButton)
+        if (clickedEndButton && !HasActiveListing)
         {
             AfterWithdraw();
             return;
         }
 
-        if (TimedOut())
+        if (WorldNotReady())
         {
-            Fail("Could not end the current listing. Open your listing and press End.");
+            if (TimedOut())
+                Fail("Wait until you finish logging in, then end the listing.");
             return;
         }
 
-        if (!TryGetDetailAddon(out var addon))
+        if (TimedOut())
         {
-            if (NativeUi.IsPresent("LookingForGroupDetail"))
-                return;
-
-            TryOpenOwnListingDetail();
+            Fail("Could not end the current listing. Open Party Finder → Recruitment Criteria → End.");
             return;
         }
 
@@ -677,13 +676,68 @@ public sealed class PartyFinderService : IDisposable
         if (clickedEndButton)
             return;
 
-        var endButton = FindDetailEndButton(addon);
-        if (endButton == null)
+        if (TryGetConditionAddon(out var condition))
+        {
+            var endButton = FindConditionEndButton(condition);
+            if (endButton != null)
+            {
+                if (!NativeUi.Click((FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)condition, endButton))
+                    return;
+
+                clickedEndButton = true;
+                SetState(RecruitStatus.ConfirmingWithdraw);
+                return;
+            }
+
+            if (LooksLikeRecruit(NativeUi.GetButtonText(condition->RecruitMembersButton)))
+            {
+                NativeUi.CloseIfOpen("LookingForGroupCondition");
+                clickedConditionButton = false;
+                lastRecruitClick = DateTime.UtcNow;
+            }
+
+            return;
+        }
+
+        if (TryGetDetailAddon(out var detail))
+        {
+            var detailEnd = FindDetailEndButton(detail);
+            if (detailEnd != null)
+            {
+                if (!NativeUi.Click((FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)detail, detailEnd))
+                    return;
+
+                clickedEndButton = true;
+                SetState(RecruitStatus.ConfirmingWithdraw);
+                return;
+            }
+        }
+
+        if (!EnsurePartyFinderVisible())
             return;
 
-        NativeUi.Click((FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)addon, endButton);
-        clickedEndButton = true;
-        SetState(RecruitStatus.ConfirmingWithdraw);
+        if (endingListing && !requestedListings)
+        {
+            var agent = AgentLookingForGroup.Instance();
+            if (agent != null)
+            {
+                agent->RequestListingsUpdate();
+                requestedListings = true;
+            }
+        }
+
+        TryOpenRecruitmentCriteria();
+    }
+
+    private unsafe FFXIVClientStructs.FFXIV.Component.GUI.AtkComponentButton* FindConditionEndButton(AddonLookingForGroupCondition* addon)
+    {
+        if (addon == null)
+            return null;
+
+        if (LooksLikeEnd(NativeUi.GetButtonText(addon->RecruitMembersButton)))
+            return addon->RecruitMembersButton;
+
+        return NativeUi.FindButton((FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)addon, LooksLikeEnd);
     }
 
     private unsafe FFXIVClientStructs.FFXIV.Component.GUI.AtkComponentButton* FindDetailEndButton(AddonLookingForGroupDetail* addon)
@@ -695,64 +749,6 @@ public sealed class PartyFinderService : IDisposable
         if (LooksLikeEnd(NativeUi.GetButtonText(addon->SendTellButton)))
             return addon->SendTellButton;
         return NativeUi.FindButton(unit, LooksLikeEnd);
-    }
-
-    private unsafe void TryOpenOwnListingDetail()
-    {
-        var agent = AgentLookingForGroup.Instance();
-        if (agent == null)
-        {
-            Fail("Party Finder is not available.");
-            return;
-        }
-
-        RememberListingId();
-
-        if (!NativeUi.TryGetAddon<AddonLookingForGroup>("LookingForGroup", out var pf))
-        {
-            if (!agent->IsAgentActive())
-                agent->Show();
-            return;
-        }
-
-        if (clickedConditionButton && DateTime.UtcNow - lastRecruitClick < TimeSpan.FromSeconds(1.2))
-            return;
-
-        var listingId = ResolveOwnListingId(agent);
-        if (listingId != 0)
-        {
-            agent->OpenListing(listingId);
-            clickedConditionButton = true;
-            lastRecruitClick = DateTime.UtcNow;
-            return;
-        }
-
-        if (!requestedListings)
-        {
-            agent->RequestCategoryListings(0);
-            agent->RequestListingsUpdate();
-            requestedListings = true;
-            lastRecruitClick = DateTime.UtcNow;
-            return;
-        }
-
-        if (TryClickOwnListingRow(pf, agent))
-        {
-            clickedConditionButton = true;
-            lastRecruitClick = DateTime.UtcNow;
-        }
-    }
-
-    private unsafe ulong ResolveOwnListingId(AgentLookingForGroup* agent)
-    {
-        RememberListingId();
-        if (agent->OwnListingId != 0)
-            return agent->OwnListingId;
-        if (knownListingId != 0)
-            return knownListingId;
-        if (agent->LastViewedListing.ListingId != 0 && LeaderIsLocalPlayer(agent))
-            return agent->LastViewedListing.ListingId;
-        return 0;
     }
 
     private unsafe void RememberListingId()
@@ -779,34 +775,6 @@ public sealed class PartyFinderService : IDisposable
 
         var leader = agent->LastLeader.ToString();
         return !string.IsNullOrWhiteSpace(leader) && leader.Contains(name, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private unsafe bool TryClickOwnListingRow(AddonLookingForGroup* pf, AgentLookingForGroup* agent)
-    {
-        var list = pf->StandardViewList != null && pf->StandardViewList->GetItemCount() > 0
-            ? pf->StandardViewList
-            : pf->CompactViewList;
-        if (list == null)
-            return false;
-
-        if (knownListingId != 0)
-        {
-            var ids = agent->Listings.ListingIds;
-            var count = Math.Min(ids.Length, list->GetItemCount());
-            for (var i = 0; i < count; i++)
-            {
-                if (ids[i] != knownListingId)
-                    continue;
-                return NativeUi.SelectListItem(list, i);
-            }
-        }
-
-        var player = Plugin.PlayerState.CharacterName;
-        if (string.IsNullOrWhiteSpace(player))
-            return false;
-
-        var index = NativeUi.FindListItem(list, label => label.Contains(player, StringComparison.OrdinalIgnoreCase));
-        return index >= 0 && NativeUi.SelectListItem(list, index);
     }
 
     private void OnReceiveListing(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
@@ -837,29 +805,17 @@ public sealed class PartyFinderService : IDisposable
         if (NativeUi.IsPresent("LookingForGroupCondition"))
             return;
 
-        var agent = AgentLookingForGroup.Instance();
-        if (agent == null)
-        {
-            Fail("Party Finder is not available.");
+        if (!EnsurePartyFinderVisible())
             return;
-        }
 
         if (!NativeUi.TryGetAddon<AddonLookingForGroup>("LookingForGroup", out var pf))
-        {
-            if (!agent->IsAgentActive())
-                agent->Show();
             return;
-        }
 
         var recruit = NativeUi.FindPartyFinderRecruitButton((FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)pf);
         if (recruit == null)
             recruit = pf->RecruitMembersButton;
-        if (recruit == null)
-        {
-            if (!agent->IsAgentActive())
-                agent->Show();
+        if (recruit == null || !recruit->IsEnabled)
             return;
-        }
 
         if (clickedConditionButton)
         {
@@ -992,7 +948,7 @@ public sealed class PartyFinderService : IDisposable
 
     private unsafe void ConfirmYesNoIfNeeded()
     {
-        if (status is not (RecruitStatus.Confirming or RecruitStatus.ClickingRecruit))
+        if (status is not (RecruitStatus.Confirming or RecruitStatus.ClickingRecruit or RecruitStatus.ConfirmingWithdraw or RecruitStatus.Withdrawing))
             return;
 
         var yesno = Plugin.GameGui.GetAddonByName<AddonSelectYesno>("SelectYesno");
@@ -1024,11 +980,77 @@ public sealed class PartyFinderService : IDisposable
     {
         var limit = status switch
         {
+            RecruitStatus.OpeningPartyFinder or RecruitStatus.OpeningCondition => OpenTimeout,
             RecruitStatus.Confirming or RecruitStatus.WaitingForListing => ConfirmTimeout,
             RecruitStatus.Withdrawing or RecruitStatus.ConfirmingWithdraw => EndTimeout,
             _ => StepTimeout,
         };
         return DateTime.UtcNow - stepStarted > limit;
+    }
+
+    private void OnLogin()
+    {
+        listingPosted = false;
+        knownListingId = 0;
+        lastSeenListingId = 0;
+        clickedConditionButton = false;
+        clickedEndButton = false;
+        requestedListings = false;
+    }
+
+    private void OnLogout(int type, int code) => HandleLoggedOut();
+
+    private void HandleLoggedOut()
+    {
+        listingPosted = false;
+        knownListingId = 0;
+        lastSeenListingId = 0;
+        clickedConditionButton = false;
+        clickedEndButton = false;
+        requestedListings = false;
+        if (status is RecruitStatus.Idle or RecruitStatus.Failed or RecruitStatus.RelistWait)
+            return;
+
+        if (AutoRelistActive)
+        {
+            nextRelistAt = DateTime.UtcNow + TimeSpan.FromSeconds(8);
+            SetState(RecruitStatus.RelistWait);
+            return;
+        }
+
+        SetState(RecruitStatus.Idle);
+    }
+
+    private static bool WorldNotReady()
+        => !Plugin.ClientState.IsLoggedIn
+           || !Plugin.PlayerState.IsLoaded
+           || Plugin.Condition[ConditionFlag.BetweenAreas]
+           || Plugin.Condition[ConditionFlag.BetweenAreas51];
+
+    private unsafe bool EnsurePartyFinderVisible()
+    {
+        var agent = AgentLookingForGroup.Instance();
+        if (agent == null)
+            return false;
+
+        if (NativeUi.TryGetAddon<AddonLookingForGroup>("LookingForGroup", out _))
+            return true;
+
+        if (!agent->IsActivatable())
+            return false;
+
+        if (DateTime.UtcNow - lastPfShow < TimeSpan.FromMilliseconds(750))
+            return false;
+
+        lastPfShow = DateTime.UtcNow;
+        if (!agent->IsAgentActive())
+            agent->Show();
+        else if (!agent->IsAddonShown())
+            agent->ShowAddon();
+        else
+            agent->Show();
+
+        return NativeUi.TryGetAddon<AddonLookingForGroup>("LookingForGroup", out _);
     }
 
     private void Fail(string message)

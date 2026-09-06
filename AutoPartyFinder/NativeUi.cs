@@ -8,7 +8,7 @@ internal static unsafe class NativeUi
 {
     public static bool Click(AtkUnitBase* addon, AtkComponentButton* button)
     {
-        if (addon == null || button == null || button->OwnerNode == null)
+        if (addon == null || button == null || button->OwnerNode == null || !button->IsEnabled)
             return false;
 
         var registered = FindRegisteredEvent(button->OwnerNode, AtkEventType.ButtonClick);
@@ -243,16 +243,20 @@ internal static unsafe class NativeUi
         if (addon == null)
             return null;
 
-        var byId = addon->GetComponentButtonById(46);
-        if (IsPlainButton(byId))
-            return byId;
-
-        return FindButton(addon, text =>
+        var labeled = FindButton(addon, text =>
         {
             var label = text.Trim();
             return label.Equals("Recruit Members", StringComparison.OrdinalIgnoreCase)
                    || label.Equals("Recruitment Criteria", StringComparison.OrdinalIgnoreCase);
         });
+        if (IsPlainButton(labeled) && IsVisible(labeled) && labeled->IsEnabled)
+            return labeled;
+
+        var byId = addon->GetComponentButtonById(46);
+        if (IsPlainButton(byId) && IsVisible(byId) && byId->IsEnabled)
+            return byId;
+
+        return null;
     }
 
     public static bool TryGetAddon<T>(string name, out T* addon) where T : unmanaged
